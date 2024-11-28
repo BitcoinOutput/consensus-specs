@@ -18,6 +18,9 @@ from eth2spec.test.helpers.block import (
     transition_unsigned_block,
     sign_block,
 )
+from eth2spec.test.helpers.execution_payload import (
+    compute_el_block_hash_for_block,
+)
 from eth2spec.test.helpers.fork_choice import (
     get_genesis_forkchoice_store_and_block,
     on_tick_and_append_step,
@@ -27,6 +30,9 @@ from eth2spec.test.helpers.fork_choice import (
     apply_next_slots_with_attestations,
     is_ready_to_justify,
     find_next_justifying_slot,
+)
+from eth2spec.test.helpers.forks import (
+    is_post_bellatrix,
 )
 from eth2spec.test.helpers.state import (
     next_epoch,
@@ -152,6 +158,8 @@ def test_on_block_bad_parent_root(spec, state):
     block.state_root = state.hash_tree_root()
 
     block.parent_root = b'\x45' * 32
+    if is_post_bellatrix(spec):
+        block.body.execution_payload.block_hash = compute_el_block_hash_for_block(spec, block)
 
     signed_block = sign_block(spec, state, block)
 
@@ -530,6 +538,56 @@ def test_proposer_boost_root_same_slot_untimely_block(spec, state):
 
     assert store.proposer_boost_root == spec.Root()
 
+    test_steps.append({
+        'checks': {
+            'proposer_boost_root': encode_hex(store.proposer_boost_root),
+        }
+    })
+
+    yield 'steps', test_steps
+
+
+@with_altair_and_later
+@spec_state_test
+def test_proposer_boost_is_first_block(spec, state):
+    test_steps = []
+    genesis_state = state.copy()
+
+    # Initialization
+    store, anchor_block = get_genesis_forkchoice_store_and_block(spec, state)
+    yield 'anchor_state', state
+    yield 'anchor_block', anchor_block
+
+    # Build block that serves as head ONLY on timely arrival, and ONLY in that slot
+    state = genesis_state.copy()
+    next_slots(spec, state, 3)
+    pre_state = state.copy()
+    block_a = build_empty_block_for_next_slot(spec, state)
+    signed_block_a = state_transition_and_sign_block(spec, state, block_a)
+
+    # Process block on timely arrival just before end of boost interval
+    time = (store.genesis_time + block_a.slot * spec.config.SECONDS_PER_SLOT +
+            spec.config.SECONDS_PER_SLOT // spec.INTERVALS_PER_SLOT - 1)
+    on_tick_and_append_step(spec, store, time, test_steps)
+    yield from add_block(spec, store, signed_block_a, test_steps)
+    # `proposer_boost_root` is now `block_a`
+    assert store.proposer_boost_root == spec.hash_tree_root(block_a)
+    assert spec.get_weight(store, spec.hash_tree_root(block_a)) > 0
+    test_steps.append({
+        'checks': {
+            'proposer_boost_root': encode_hex(store.proposer_boost_root),
+        }
+    })
+
+    # make a different block at the same slot
+    state = pre_state.copy()
+    block_b = block_a.copy()
+    block_b.body.graffiti = b'\x34' * 32
+    signed_block_b = state_transition_and_sign_block(spec, state, block_b)
+    yield from add_block(spec, store, signed_block_b, test_steps)
+    # `proposer_boost_root` is still `block_a`
+    assert store.proposer_boost_root == spec.hash_tree_root(block_a)
+    assert spec.get_weight(store, spec.hash_tree_root(block_b)) == 0
     test_steps.append({
         'checks': {
             'proposer_boost_root': encode_hex(store.proposer_boost_root),

@@ -294,7 +294,7 @@ def is_partially_withdrawable_validator(validator: Validator, balance: Gwei) -> 
 
 ### Epoch processing
 
-*Note*: The function `process_historical_summaries_update` replaces `process_historical_roots_update` in Bellatrix.
+*Note*: The function `process_historical_summaries_update` replaces `process_historical_roots_update` in Capella.
 
 ```python
 def process_epoch(state: BeaconState) -> None:
@@ -379,10 +379,9 @@ def get_expected_withdrawals(state: BeaconState) -> Sequence[Withdrawal]:
 ```python
 def process_withdrawals(state: BeaconState, payload: ExecutionPayload) -> None:
     expected_withdrawals = get_expected_withdrawals(state)
-    assert len(payload.withdrawals) == len(expected_withdrawals)
+    assert payload.withdrawals == expected_withdrawals
 
-    for expected_withdrawal, withdrawal in zip(expected_withdrawals, payload.withdrawals):
-        assert withdrawal == expected_withdrawal
+    for withdrawal in expected_withdrawals:
         decrease_balance(state, withdrawal.validator_index, withdrawal.amount)
 
     # Update the next withdrawal index if this block contained withdrawals

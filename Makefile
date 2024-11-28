@@ -34,11 +34,11 @@ MARKDOWN_FILES = $(wildcard $(SPEC_DIR)/*/*.md) \
                  $(wildcard $(SPEC_DIR)/_features/*/*/*.md) \
                  $(wildcard $(SSZ_DIR)/*.md)
 
-ALL_EXECUTABLE_SPECS = phase0 altair bellatrix capella deneb eip6110 whisk
+ALL_EXECUTABLE_SPEC_NAMES = phase0 altair bellatrix capella deneb electra whisk eip6800 eip7594 eip7732
 # The parameters for commands. Use `foreach` to avoid listing specs again.
-COVERAGE_SCOPE := $(foreach S,$(ALL_EXECUTABLE_SPECS), --cov=eth2spec.$S.$(TEST_PRESET_TYPE))
-PYLINT_SCOPE := $(foreach S,$(ALL_EXECUTABLE_SPECS), ./eth2spec/$S)
-MYPY_SCOPE := $(foreach S,$(ALL_EXECUTABLE_SPECS), -p eth2spec.$S)
+COVERAGE_SCOPE := $(foreach S,$(ALL_EXECUTABLE_SPEC_NAMES), --cov=eth2spec.$S.$(TEST_PRESET_TYPE))
+PYLINT_SCOPE := $(foreach S,$(ALL_EXECUTABLE_SPEC_NAMES), ./eth2spec/$S)
+MYPY_SCOPE := $(foreach S,$(ALL_EXECUTABLE_SPEC_NAMES), -p eth2spec.$S)
 
 COV_HTML_OUT=.htmlcov
 COV_HTML_OUT_DIR=$(PY_SPEC_DIR)/$(COV_HTML_OUT)
@@ -74,7 +74,7 @@ partial_clean:
 	rm -rf $(TEST_REPORT_DIR)
 	rm -rf eth2spec.egg-info dist build
 	rm -rf build;
-	@for spec_name in $(ALL_EXECUTABLE_SPECS) ; do \
+	@for spec_name in $(ALL_EXECUTABLE_SPEC_NAMES) ; do \
 		echo $$spec_name; \
 		rm -rf $(ETH2SPEC_MODULE_DIR)/$$spec_name; \
 	done
@@ -96,28 +96,31 @@ dist_check:
 dist_upload:
 	python3 -m twine upload dist/*
 
+build_wheel: install_test pyspec
+	. venv/bin/activate && \
+	python3 -m build --no-isolation --outdir ./dist ./
 
 # "make generate_tests" to run all generators
 generate_tests: $(GENERATOR_TARGETS)
 
 # "make pyspec" to create the pyspec for all phases.
 pyspec:
-	python3 -m venv venv; . venv/bin/activate; python3 setup.py pyspecdev
+	@python3 -m venv venv; . venv/bin/activate; python3 setup.py pyspecdev
 
 # check the setup tool requirements
 preinstallation:
-	python3 -m venv venv; . venv/bin/activate; \
+	python3 -m venv venv && \
+	. venv/bin/activate && \
 	python3 -m pip install -r requirements_preinstallation.txt
 
-# installs the packages to run pyspec tests
 install_test: preinstallation
-	python3 -m venv venv; . venv/bin/activate; \
-	python3 -m pip install -e .[lint]; python3 -m pip install -e .[test]
+	. venv/bin/activate && \
+	python3 -m pip install -e .[lint,test]
 
 # Testing against `minimal` or `mainnet` config by default
 test: pyspec
 	. venv/bin/activate; cd $(PY_SPEC_DIR); \
-	python3 -m pytest -n 4 --disable-bls $(COVERAGE_SCOPE) --cov-report="html:$(COV_HTML_OUT)" --cov-branch eth2spec
+	python3 -m pytest -n auto --disable-bls $(COVERAGE_SCOPE) --cov-report="html:$(COV_HTML_OUT)" --cov-branch eth2spec
 
 # Testing against `minimal` or `mainnet` config by default
 find_test: pyspec
@@ -128,23 +131,31 @@ citest: pyspec
 	mkdir -p $(TEST_REPORT_DIR);
 ifdef fork
 	. venv/bin/activate; cd $(PY_SPEC_DIR); \
-	python3 -m pytest -n 16 --bls-type=fastest --preset=$(TEST_PRESET_TYPE) --fork=$(fork) --junitxml=test-reports/test_results.xml eth2spec
+	python3 -m pytest -n auto --bls-type=fastest --preset=$(TEST_PRESET_TYPE) --fork=$(fork) --junitxml=test-reports/test_results.xml eth2spec
 else
 	. venv/bin/activate; cd $(PY_SPEC_DIR); \
-	python3 -m pytest -n 16 --bls-type=fastest --preset=$(TEST_PRESET_TYPE) --junitxml=test-reports/test_results.xml eth2spec
+	python3 -m pytest -n auto --bls-type=fastest --preset=$(TEST_PRESET_TYPE) --junitxml=test-reports/test_results.xml eth2spec
 endif
 
 
 open_cov:
 	((open "$(COV_INDEX_FILE)" || xdg-open "$(COV_INDEX_FILE)") &> /dev/null) &
 
+# Check all files and error if any ToC were modified.
 check_toc: $(MARKDOWN_FILES:=.toc)
+	@[ "$$(find . -name '*.md.tmp' -print -quit)" ] && exit 1 || exit 0
 
+# Generate ToC sections & save copy of original if modified.
 %.toc:
-	cp $* $*.tmp && \
-	doctoc $* && \
-	diff -q $* $*.tmp && \
-	rm $*.tmp
+	@cp $* $*.tmp; \
+	doctoc $* > /dev/null; \
+	if diff -q $* $*.tmp > /dev/null; then \
+		echo "Good $*"; \
+		rm $*.tmp; \
+	else \
+		echo "\033[1;33m Bad $*\033[0m"; \
+		echo "\033[1;34m See $*.tmp\033[0m"; \
+	fi
 
 codespell:
 	codespell . --skip "./.git,./venv,$(PY_SPEC_DIR)/.mypy_cache" -I .codespell-whitelist
@@ -195,7 +206,8 @@ define run_generator
 	cd $(GENERATOR_DIR)/$(1); \
 	if ! test -d venv; then python3 -m venv venv; fi; \
 	. venv/bin/activate; \
-	pip3 install -r requirements.txt; \
+	pip3 install ../../../dist/eth2spec-*.whl; \
+	pip3 install 'eth2spec[generator]'; \
 	python3 main.py -o $(CURRENT_DIR)/$(TEST_VECTOR_DIR); \
 	echo "generator $(1) finished"
 endef
@@ -212,12 +224,12 @@ gen_kzg_setups:
 	if ! test -d venv; then python3 -m venv venv; fi; \
 	. venv/bin/activate; \
 	pip3 install -r requirements.txt; \
-	python3 ./gen_kzg_trusted_setups.py --secret=1337 --g1-length=4 --g2-length=65 --output-dir ${CURRENT_DIR}/presets/minimal/trusted_setups; \
+	python3 ./gen_kzg_trusted_setups.py --secret=1337 --g1-length=4096 --g2-length=65 --output-dir ${CURRENT_DIR}/presets/minimal/trusted_setups; \
 	python3 ./gen_kzg_trusted_setups.py --secret=1337 --g1-length=4096 --g2-length=65 --output-dir ${CURRENT_DIR}/presets/mainnet/trusted_setups
 
 # For any generator, build it using the run_generator function.
 # (creation of output dir is a dependency)
-gen_%: $(TEST_VECTOR_DIR)
+gen_%: build_wheel $(TEST_VECTOR_DIR)
 	$(call run_generator,$*)
 
 detect_generator_incomplete: $(TEST_VECTOR_DIR)
@@ -243,5 +255,5 @@ build_docs: copy_docs
 	mkdocs build
 
 serve_docs:
-	. venv/bin/activate; 
+	. venv/bin/activate;
 	mkdocs serve
